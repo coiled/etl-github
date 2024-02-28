@@ -6,6 +6,9 @@ import pandas as pd
 import dask.distributed
 from dask.distributed import as_completed, LocalCluster
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 def handle_PushEvent(d):
     for commit in d["payload"]["commits"]:
@@ -61,11 +64,31 @@ def handle_IssueCommentEvent(d):
     }
 
 
+def handle_WatchEvent(d):
+    return {
+        "username": d["actor"]["login"],
+        "repo": d["repo"]["name"],
+        "action": d["payload"]["action"],
+        "created_at": datetime.datetime.fromisoformat(d["created_at"]),
+    }
+
+
+def handle_ForkEvent(d):
+    return {
+        "username": d["actor"]["login"],
+        "repo": d["repo"]["name"],
+        "created_at": datetime.datetime.fromisoformat(d["created_at"]),
+    }
+
+
+
 conversions = {
     "PushEvent": handle_PushEvent,
     "CreateEvent": handle_CreateEvent,
     "PullRequestEvent": handle_PullRequestEvent,
     "IssueCommentEvent": handle_IssueCommentEvent,
+    "WatchEvent": handle_WatchEvent,
+    "ForkEvent": handle_ForkEvent,
 }
 
 
@@ -78,7 +101,13 @@ def process_records(seq):
             continue
 
         if record["type"] in conversions:
-            result = conversions[record["type"]](record)
+            convert = conversions[record["type"]]
+            try:
+                result = convert(record)
+            except Exception as e:
+                logger.error("Failed to parse record")
+                continue
+
             out[record["type"]].append(result)
 
     return out
@@ -98,12 +127,14 @@ def process_file(filename: str) -> dict[str, pd.DataFrame]:
         "pr": out["PullRequestEvent"],
         "commit": out["Commits"],
         "create": out["CreateEvent"],
+        "watch": out["WatchEvent"],
+        "fork": out["ForkEvent"],
     }
     return out
 
 
 def write_delta(tables: dict[str, pd.DataFrame]):
-    for k, df in result.items():
+    for k, df in tables.items():
         deltalake.write_deltalake("data/" + k, df, mode="append")
 
 
@@ -116,8 +147,8 @@ def list_files(start, stop):
 
 if __name__ == "__main__":
     filenames = list_files(
-        start=datetime.date(2024, 2, 1),
-        stop=datetime.date(2024, 2, 3),
+        start=datetime.date(2024, 1, 1),
+        stop=datetime.date(2024, 1, 10),
     )
 
     with LocalCluster() as cluster:
