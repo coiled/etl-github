@@ -1,13 +1,35 @@
-import json, gzip, toolz, fsspec
-import deltalake
-from collections import defaultdict
 import datetime
-import pandas as pd
-import dask.distributed
-from dask.distributed import as_completed, LocalCluster
-
+import functools
+import json
 import logging
+import os
+from collections import defaultdict
+
+import coiled
+import deltalake
+import fsspec
+import pandas as pd
+import toolz
+from dask.distributed import LocalCluster, print, wait
+from upath import UPath as Path
+
 logger = logging.getLogger(__name__)
+
+LOCAL = False
+if LOCAL:
+    OUTDIR = Path(f"./data")
+    STORAGE_OPTIONS = {}
+    Cluster = LocalCluster
+else:
+    OUTDIR = Path(f"s3://openscapes-scratch/etl-github")
+    STORAGE_OPTIONS = {"AWS_REGION": "us-west-2", "AWS_S3_ALLOW_UNSAFE_RENAME": "true"}
+    Cluster = functools.partial(
+        coiled.Cluster,
+        name="etl-github",
+        n_workers=50,
+        region="us-west-2",
+        shutdown_on_close=False,
+    )
 
 
 def handle_PushEvent(d):
@@ -105,7 +127,7 @@ def process_records(seq):
             try:
                 result = convert(record)
             except Exception as e:
-                logger.error("Failed to parse record")
+                logger.error(f"Failed to parse record: {e}")
                 continue
 
             out[record["type"]].append(result)
@@ -134,9 +156,15 @@ def process_file(filename: str) -> dict[str, pd.DataFrame]:
 
 
 def write_delta(tables: dict[str, pd.DataFrame]):
-    for k, df in tables.items():
-        deltalake.write_deltalake("data/" + k, df, mode="append")
-
+    for table, df in tables.items():
+        outfile = OUTDIR / table
+        outfile.fs.makedirs(outfile.parent, exist_ok=True)
+        deltalake.write_deltalake(
+            outfile,
+            df,
+            mode="append",
+            storage_options=STORAGE_OPTIONS,
+        )
 
 def list_files(start, stop):
     dates = pd.date_range(start, stop - datetime.timedelta(days=1), freq="d")
@@ -145,16 +173,33 @@ def list_files(start, stop):
     return filenames
 
 
+def compact(table):
+    t = deltalake.DeltaTable(
+        OUTDIR / table,
+        storage_options=STORAGE_OPTIONS,
+    )
+    t.optimize.compact()
+    t.vacuum(retention_hours=0, enforce_retention_duration=False, dry_run=False)
+    print(f"Compacted {table} table")
+
+
 if __name__ == "__main__":
     filenames = list_files(
         start=datetime.date(2024, 1, 1),
         stop=datetime.date(2024, 1, 10),
     )
 
-    with LocalCluster() as cluster:
+    with Cluster() as cluster:
+        if not LOCAL:
+            cluster.send_private_envs({
+                "AWS_ACCESS_KEY_ID": os.environ["AWS_ACCESS_KEY_ID"],
+                "AWS_SECRET_ACCESS_KEY": os.environ["AWS_SECRET_ACCESS_KEY"],
+            })
         with cluster.get_client() as client:
+            client.restart()
             futures = client.map(process_file, filenames)
-            for future, result in as_completed(futures, with_results=True):
-                print(".", end="")
-                future.cancel()
-                write_delta(result)
+            futures = client.map(write_delta, futures, retries=10)
+            wait(futures)
+            tables = ["comment", "pr", "commit", "create", "watch", "fork"]
+            futures = client.map(compact, tables)
+            wait(futures)
