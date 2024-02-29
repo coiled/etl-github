@@ -15,7 +15,7 @@ from upath import UPath as Path
 
 logger = logging.getLogger(__name__)
 
-LOCAL = False
+LOCAL = True
 if LOCAL:
     OUTDIR = Path(f"./data")
     STORAGE_OPTIONS = {}
@@ -152,6 +152,8 @@ def process_file(filename: str) -> dict[str, pd.DataFrame]:
         "watch": out["WatchEvent"],
         "fork": out["ForkEvent"],
     }
+    for df in out.values():
+        df["date"] = df.created_at.dt.date
     return out
 
 
@@ -164,6 +166,7 @@ def write_delta(tables: dict[str, pd.DataFrame]):
             df,
             mode="append",
             storage_options=STORAGE_OPTIONS,
+            partition_by="date",
         )
 
 def list_files(start, stop):
@@ -186,7 +189,7 @@ def compact(table):
 if __name__ == "__main__":
     filenames = list_files(
         start=datetime.date(2024, 1, 1),
-        stop=datetime.date(2024, 1, 10),
+        stop=datetime.date(2024, 1, 5),
     )
 
     with Cluster() as cluster:
