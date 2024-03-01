@@ -206,7 +206,11 @@ def compact(table):
     print(f"Compacted {table} table")
 
 
-def save_results():
+def query_data():
+    # These are not the actual queries we want.
+    # We're using these for now to get something going, but we
+    # should revisit them soon.
+    # (xref https://github.com/coiled/etl-github/pull/4#discussion_r1509525504)
     watches = ddt.read_deltalake(OUTDIR / "watch")
     repos = watches.repo.value_counts()
     repos = repos[repos > 5].repartition(npartitions=1).to_frame()
@@ -218,12 +222,12 @@ def save_results():
         major_commits.message.str.lower().str.contains(" dask")
     ][["username", "repo", "message", "count"]]
     df = df[~df.repo.str.startswith("dask/")]
-    results = df.sort_values("count", ascending=False)
-    outdir = OUTDIR / "results" / "commits"
+    out = df.sort_values("count", ascending=False)
+    outdir = OUTDIR / "dask" / "commits"
     if outdir.exists():
         outdir.fs.rm(str(outdir), recursive=True)
         outdir.fs.makedirs(outdir)
-    ddt.to_deltalake(outdir, results, storage_options=STORAGE_OPTIONS)
+    ddt.to_deltalake(outdir, out, storage_options=STORAGE_OPTIONS)
 
     # Same but for comments
     comments = ddt.read_deltalake(OUTDIR / "comment")
@@ -232,12 +236,12 @@ def save_results():
         major_comments.comment.str.lower().str.contains(" dask")
     ][["username", "repo", "comment", "count"]]
     df = df[~df.repo.str.startswith("dask/")]
-    results = df.sort_values("count", ascending=False)
-    outdir = OUTDIR / "results" / "comments"
+    out = df.sort_values("count", ascending=False)
+    outdir = OUTDIR / "dask" / "comments"
     if outdir.exists():
         outdir.fs.rm(str(outdir), recursive=True)
         outdir.fs.makedirs(outdir)
-    ddt.to_deltalake(outdir, results, storage_options=STORAGE_OPTIONS)
+    ddt.to_deltalake(outdir, out, storage_options=STORAGE_OPTIONS)
 
 
 @flow(log_prints=True)
@@ -259,7 +263,7 @@ def workflow(start=None, stop=None):
             tables = ["comment", "pr", "commit", "create", "watch", "fork"]
             futures = client.map(compact, tables)
             wait(futures)
-            save_results()
+            query_data()
 
 
 if __name__ == "__main__":
