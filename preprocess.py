@@ -27,7 +27,7 @@ else:
     Cluster = functools.partial(
         coiled.Cluster,
         name="etl-github",
-        n_workers=50,
+        n_workers=1,
         region="us-west-2",
         shutdown_on_close=False,
     )
@@ -212,8 +212,8 @@ def workflow(start=None, stop=None):
                 "AWS_ACCESS_KEY_ID": os.environ["AWS_ACCESS_KEY_ID"],
                 "AWS_SECRET_ACCESS_KEY": os.environ["AWS_SECRET_ACCESS_KEY"],
             })
+            cluster.adapt(minimum=1, maximum=100)
         with cluster.get_client() as client:
-            client.restart()
             futures = client.map(process_file, filenames)
             futures = client.map(write_delta, futures, retries=10)
             wait(futures)
